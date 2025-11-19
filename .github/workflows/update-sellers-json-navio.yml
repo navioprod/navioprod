@@ -1,1 +1,113 @@
+name: Update sellers.json from Airtable (Navio)
+
+on:
+  schedule:
+    - cron: '0 * * * *'       # every hour
+  workflow_dispatch:          # manual trigger
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install axios
+        run: npm install axios
+
+      - name: Fetch data from Airtable and update sellers.json
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+        run: |
+          node <<'EOF'
+          const fs = require('fs');
+          const axios = require('axios');
+
+          const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
+          const BASE_ID = process.env.AIRTABLE_BASE_ID;
+          const TABLE_NAME = process.env.AIRTABLE_TABLE_NAME;
+
+          const url = `https://api.airtable.com/v0/${BASE_ID}/${encodeURIComponent(TABLE_NAME)}`;
+
+          axios.get(url, {
+            headers: {
+              Authorization: `Bearer ${AIRTABLE_TOKEN}`,
+            },
+          })
+          .then(response => {
+            console.log("Records received from Airtable:", response.data.records.length);
+
+            const hasValue = val =>
+              val !== null &&
+              val !== undefined &&
+              (typeof val !== 'string' || val.trim().length > 0);
+
+            const sellers = response.data.records
+              .filter(record => {
+                const fields = record.fields || {};
+                const status = fields.Status;
+
+                return (
+                  hasValue(fields.SellerID) &&
+                  hasValue(fields["Seller Type"]) &&
+                  hasValue(fields["Publisher Name"]) &&
+                  hasValue(fields.Domain) &&
+                  status !== "Onboarding" &&
+                  status !== "Deactivated"
+                );
+              })
+              .map(record => {
+                const f = record.fields;
+                const safeTrim = v => typeof v === 'string' ? v.trim() : v;
+
+                return {
+                  seller_id: safeTrim(f.SellerID),
+                  seller_type: safeTrim(f["Seller Type"]),
+                  name: safeTrim(f["Publisher Name"]),
+                  domain: safeTrim(f.Domain),
+                };
+              });
+
+            const pacificTime = new Date().toLocaleString('en-US', {
+              timeZone: 'America/Los_Angeles',
+              month: 'long',
+              day: 'numeric',
+              year: 'numeric',
+              hour: 'numeric',
+              minute: '2-digit',
+              hour12: true,
+            });
+
+            const sellersJson = {
+              last_updated: `${pacificTime} PT`,
+              contact_address: "Navio Media Inc, 123 Sample Address, City, ST 99999",
+              contact_email: "info@navio.tv",
+              version: "1.0",
+              Identifiers: [
+                { Name: "TAG-ID", Value: "navio-tag-id-placeholder" },
+                { Name: "DUNS", Value: "navio-duns-placeholder" }
+              ],
+              sellers
+            };
+
+            console.log("Included sellers:", sellers.length);
+            fs.writeFileSync('sellers.json', JSON.stringify(sellersJson, null, 2));
+          })
+          .catch(error => {
+            console.error('Error fetching data from Airtable:', error.response?.data || error.message || error);
+            process.exit(1);
+          });
+          EOF
+
+      - name: Commit and push sellers.json
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: Auto-update sellers.json
 
